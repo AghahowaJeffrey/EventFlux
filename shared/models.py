@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -33,6 +34,15 @@ class Event(BaseModel):
 class BulkEventRequest(BaseModel):
     """Payload for POST /v1/events/bulk."""
 
+    request_id: UUID = Field(default_factory=uuid4, description="Client-supplied or auto-generated trace ID")
     events: list[Event] = Field(..., min_length=1)
 
     model_config = {"extra": "forbid"}
+
+
+class EventBulkResponse(BaseModel):
+    """Response body for 202 Accepted from POST /v1/events/bulk."""
+
+    request_id: str
+    queued: int
+    stream_len: int | None = None
