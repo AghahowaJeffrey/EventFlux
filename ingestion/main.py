@@ -9,7 +9,8 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ingestion.routers import events, analytics
+from ingestion.middleware import RequestIDMiddleware
+from ingestion.routers import analytics, events, health
 from shared.settings import get_redis
 
 logger = logging.getLogger("eventflux.api")
@@ -39,22 +40,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="EventFlux Ingestion API",
-    version="0.1.0",
+    version="0.2.0",
     description="High-throughput telemetry ingestion and analytics query service.",
     lifespan=lifespan,
 )
 
+# Middleware — order matters: RequestID runs closest to the handler
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIDMiddleware)
 
+# Routers
 app.include_router(events.router, prefix="/v1")
 app.include_router(analytics.router, prefix="/v1")
+app.include_router(health.router)
 
 
-@app.get("/healthz", tags=["ops"])
-async def health() -> dict[str, str]:
+@app.get("/healthz", tags=["ops"], summary="Liveness probe")
+async def health_liveness() -> dict[str, str]:
+    """Always returns 200 OK if the process is alive."""
     return {"status": "ok"}
