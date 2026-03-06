@@ -46,3 +46,4 @@ class EventBulkResponse(BaseModel):
     request_id: str
     queued: int
     stream_len: int | None = None
+    mode: str = "queue"  # "queue" | "bypass-queue"

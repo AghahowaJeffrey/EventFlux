@@ -60,6 +60,7 @@ class WorkerSettings(BaseSettings):
     batch_size: int = 500
     flush_interval_s: float = 2.0
     max_block_ms: int = 2000
+    single_row_mode: bool = False  # Experiment: use executemany instead of COPY
 
     model_config = SettingsConfigDict(env_prefix="WORKER_", extra="ignore")
 
