@@ -1,14 +1,11 @@
 """
-EventFlux — Batch Worker (Phase 2)
+EventFlux — Batch Worker (Phase 3)
 
-Improvements over Phase 1:
-- PEL recovery via XAUTOCLAIM on startup (claims messages stuck > 5 min)
-- Dead-letter stream: after MAX_DELIVERY_ATTEMPTS, poisoned messages are
-  moved to `events:dead` and ACKed from the main stream
-- Bulk insert upgraded to asyncpg COPY (copy_records_to_table) for
-  maximum throughput — ~10x faster than executemany for large batches
-- Structured flush log: events/s, pending count, batch size
-- Partition manager coroutine integrated into the TaskGroup
+Phase 3 additions:
+- WORKER_SINGLE_ROW_MODE env var: switches from asyncpg COPY to individual
+  row inserts (executemany) so load tests can demonstrate the throughput
+  difference between single-row and batch strategies.
+- Flush metrics log now includes insert_mode for easy grep/correlation.
 """
 from __future__ import annotations
 
@@ -77,6 +74,33 @@ async def bulk_insert_copy(pool: asyncpg.Pool, events: list[dict[str, Any]]) -> 
             columns=["event_type", "actor_id", "source", "timestamp", "attributes"],
         )
 
+    return len(records)
+
+
+async def bulk_insert_single_row(pool: asyncpg.Pool, events: list[dict[str, Any]]) -> int:
+    """
+    Insert events one row at a time using executemany.
+
+    Intentionally slower than COPY — used when WORKER_SINGLE_ROW_MODE=true
+    to provide a controlled comparison baseline for Phase 5 benchmarking.
+    This mirrors what many naive implementations do in production.
+    """
+    records = [
+        (
+            row["event_type"],
+            row["actor_id"],
+            row["source"],
+            row["timestamp"],
+            json.loads(row["attributes"]),
+        )
+        for row in events
+    ]
+    sql = """
+        INSERT INTO events_raw (event_type, actor_id, source, timestamp, attributes)
+        VALUES ($1, $2, $3, $4::timestamptz, $5::jsonb)
+    """
+    async with pool.acquire() as conn:
+        await conn.executemany(sql, records)
     return len(records)
 
 
@@ -217,8 +241,12 @@ async def ingest_loop(
 
         if should_flush and buffer:
             t0 = time.monotonic()
+            insert_mode = "single-row" if _worker_cfg.single_row_mode else "copy"
             try:
-                inserted = await bulk_insert_copy(pool, buffer)
+                if _worker_cfg.single_row_mode:
+                    inserted = await bulk_insert_single_row(pool, buffer)
+                else:
+                    inserted = await bulk_insert_copy(pool, buffer)
                 await redis.xack(
                     _redis_cfg.stream_key,
                     _redis_cfg.consumer_group,
@@ -227,14 +255,14 @@ async def ingest_loop(
                 duration = time.monotonic() - t0
                 rate = inserted / duration if duration > 0 else 0.0
                 logger.info(
-                    "Flushed batch: inserted=%d duration=%.3fs rate=%.0f events/s",
-                    inserted, duration, rate,
+                    "Flushed batch: inserted=%d mode=%s duration=%.3fs rate=%.0f events/s",
+                    inserted, insert_mode, duration, rate,
                 )
                 buffer.clear()
                 pending_ids.clear()
                 last_flush = time.monotonic()
             except Exception as exc:  # noqa: BLE001
-                logger.error("Flush failed (%s) — retrying next cycle.", exc)
+                logger.error("Flush failed mode=%s (%s) — retrying next cycle.", insert_mode, exc)
 
     # Graceful shutdown: flush remaining buffer
     if buffer:
