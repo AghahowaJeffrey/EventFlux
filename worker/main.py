@@ -21,6 +21,7 @@ import redis.asyncio as aioredis
 
 from shared.queue import EventQueue
 from shared.settings import get_aggregation, get_postgres, get_redis, get_worker
+from worker.aggregation import run_daily_aggregation, run_incremental_aggregation
 from worker.partition_manager import partition_manager_loop
 
 logger = logging.getLogger("eventflux.worker")
@@ -177,31 +178,6 @@ async def recover_pending(redis: aioredis.Redis, queue: EventQueue) -> None:
     logger.info("PEL recovery complete.")
 
 
-# ─── Aggregation job ─────────────────────────────────────────────────────────
-
-async def run_aggregation(pool: asyncpg.Pool) -> None:
-    """Upsert daily event counts covering the last 2 days (idempotent)."""
-    sql = """
-        INSERT INTO analytics_daily_event_counts (day, event_type, source, count, updated_at)
-        SELECT
-            date(timestamp)   AS day,
-            event_type,
-            source,
-            COUNT(*)          AS count,
-            now()             AS updated_at
-        FROM events_raw
-        WHERE timestamp >= now() - INTERVAL '2 days'
-        GROUP BY 1, 2, 3
-        ON CONFLICT (day, event_type, source)
-        DO UPDATE SET
-            count      = EXCLUDED.count,
-            updated_at = EXCLUDED.updated_at
-    """
-    async with pool.acquire() as conn:
-        result = await conn.execute(sql)
-    logger.info("Aggregation job complete. %s", result)
-
-
 # ─── Ingest loop ─────────────────────────────────────────────────────────────
 
 async def ingest_loop(
@@ -278,16 +254,36 @@ async def ingest_loop(
             logger.error("Shutdown flush failed: %s", exc)
 
 
-# ─── Aggregation scheduler ───────────────────────────────────────────────────
+# ─── Aggregation scheduler ───────────────────────────────────────────────
 
 async def aggregation_loop(pool: asyncpg.Pool, stop_event: asyncio.Event) -> None:
+    """
+    Dual-strategy aggregation scheduler:
+
+    1. Every AGGREGATION_INTERVAL_S seconds: run incremental aggregation
+       using a watermark (only scans newly ingested rows).
+    2. Once per hour (on a 3600s tick): run full daily recompute to heal
+       any gaps or corrections in the last 2 days.
+    """
+    from datetime import datetime, timezone
     logger.info("Aggregation scheduler started. interval=%ds", _agg_cfg.interval_s)
+
+    watermark = datetime.now(timezone.utc)
+    ticks = 0
+    DAILY_RECOMPUTE_EVERY = max(1, 3600 // _agg_cfg.interval_s)  # hourly
+
     while not stop_event.is_set():
         await asyncio.sleep(_agg_cfg.interval_s)
         if stop_event.is_set():
             break
         try:
-            await run_aggregation(pool)
+            # Incremental fast path (every tick)
+            _, watermark = await run_incremental_aggregation(pool, watermark)
+
+            # Full recompute (hourly) for correctness guarantee
+            ticks += 1
+            if ticks % DAILY_RECOMPUTE_EVERY == 0:
+                await run_daily_aggregation(pool)
         except Exception as exc:  # noqa: BLE001
             logger.error("Aggregation failed: %s", exc)
 
