@@ -22,6 +22,9 @@ logs-api:
 logs-worker:
 	docker compose logs -f worker
 
+logs-dashboard:
+	docker compose logs -f dashboard
+
 # ── Shells ───────────────────────────────────────────────────────────────────
 shell-api:
 	docker compose exec api bash
@@ -39,7 +42,7 @@ migrate:
 
 # ── Seeding ──────────────────────────────────────────────────────────────────
 seed:
-	python scripts/seed.py
+	python3 scripts/seed.py
 
 # ── Load tests ───────────────────────────────────────────────────────────────
 load-test-scenario1:

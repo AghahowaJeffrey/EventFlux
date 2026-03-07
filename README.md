@@ -49,9 +49,16 @@ EventFlux is an **event ingestion and analytics system** designed to receive mil
 | Data retention | Configurable (default: indefinite with partition-drop policy) |
 | Daily unique events | 10M–1B |
 
+### 8. Dashboard (Phase 9)
+A real-time analytics interface built with React and TypeScript.
+- **Access**: `http://localhost:8080`
+- **Tech Stack**: TanStack Query (caching), Zustand (state), Recharts (visualization), Nginx (SPA + Proxy).
+- **Features**: Time-series volume trends, summary cards (Total/Unique), and source/type breakdowns.
+- **Latency**: Reflects partitioned aggregation (60s tick) + Redis cache TTL (120s-300s).
+
 ---
 
-## 2. Architecture Overview
+## 🏗️ Architecture Overview
 
 ```
                            ┌─────────────────────────────────────────────────┐
