@@ -14,6 +14,7 @@ import json
 import logging
 import signal
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
@@ -44,6 +45,16 @@ PEL_IDLE_THRESHOLD_MS = 5 * 60 * 1000  # 5 minutes
 DEAD_LETTER_STREAM = "events:dead"
 
 
+def _parse_ts(value: str) -> datetime:
+    """
+    Convert an ISO-8601 timestamp string (from Redis) to a timezone-aware datetime.
+    Required because asyncpg.copy_records_to_table needs native Python types;
+    it does NOT perform implicit string-to-timestamptz casting like the SQL
+    wire protocol does.
+    """
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
 # ─── Bulk insert via COPY ────────────────────────────────────────────────────
 
 async def bulk_insert_copy(pool: asyncpg.Pool, events: list[dict[str, Any]]) -> int:
@@ -62,8 +73,8 @@ async def bulk_insert_copy(pool: asyncpg.Pool, events: list[dict[str, Any]]) -> 
             row["event_type"],
             row["actor_id"],
             row["source"],
-            row["timestamp"],              # str ISO-8601 — PG casts to timestamptz
-            json.loads(row["attributes"]),  # dict — PG casts to jsonb
+            _parse_ts(row["timestamp"]),    # datetime — COPY protocol requires native types
+            row["attributes"],              # str (JSON) — required by asyncpg COPY for jsonb
         )
         for row in events
     ]
@@ -91,14 +102,14 @@ async def bulk_insert_single_row(pool: asyncpg.Pool, events: list[dict[str, Any]
             row["event_type"],
             row["actor_id"],
             row["source"],
-            row["timestamp"],
-            json.loads(row["attributes"]),
+            _parse_ts(row["timestamp"]),    # parse to datetime for consistency
+            row["attributes"],              # str (JSON)
         )
         for row in events
     ]
     sql = """
         INSERT INTO events_raw (event_type, actor_id, source, timestamp, attributes)
-        VALUES ($1, $2, $3, $4::timestamptz, $5::jsonb)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
     """
     async with pool.acquire() as conn:
         await conn.executemany(sql, records)
@@ -302,7 +313,11 @@ async def main() -> None:
         decode_responses=True,
     )
     pool = await asyncpg.create_pool(
-        _pg_cfg.dsn, min_size=2, max_size=10, command_timeout=30,
+        _pg_cfg.dsn,
+        min_size=2,
+        max_size=10,
+        command_timeout=30,
+        ssl=False,  # Docker internal network — no TLS needed
     )
 
     queue = EventQueue(redis)

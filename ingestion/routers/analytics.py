@@ -27,7 +27,8 @@ _pg_cfg = get_postgres()
 
 
 async def _get_conn() -> asyncpg.Connection:
-    return await asyncpg.connect(_pg_cfg.dsn)
+    # ssl=False: internal Docker network; PostgreSQL not configured for TLS
+    return await asyncpg.connect(_pg_cfg.dsn, ssl=False)
 
 
 # ─── /analytics/events/daily ─────────────────────────────────────────────────

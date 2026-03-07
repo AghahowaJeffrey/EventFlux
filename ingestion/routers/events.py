@@ -38,7 +38,7 @@ async def _direct_pg_insert(events: list) -> int:
     Intentionally slow — used to demonstrate the cost of synchronous
     per-row writes versus async batch insertion via the worker.
     """
-    conn: asyncpg.Connection = await asyncpg.connect(_pg_cfg.dsn)
+    conn: asyncpg.Connection = await asyncpg.connect(_pg_cfg.dsn, ssl=False)
     try:
         sql = """
             INSERT INTO events_raw (event_type, actor_id, source, timestamp, attributes)
